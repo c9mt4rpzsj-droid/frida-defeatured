@@ -29,6 +29,20 @@ jobs:
           git submodule update --init --depth 1 releng
           echo "FRIDA_DIR=$RUNNER_TEMP/frida" >> "$GITHUB_ENV"
 
+      - name: 提供 minizip 子项目（android gadget 编译依赖）
+        run: |
+          # frida-gum 的 minizip-ng.wrap 在嵌套 subprojects 里，当前 meson 配置下
+          # dependency('minizip') 未自动 fallback，导致 gadget 的 <minizip/mz_strm.h> 缺失。
+          # 解法：在顶层 subprojects 放 wrap + 预克隆 minizip-ng 源码。
+          cd "$FRIDA_DIR/subprojects"
+          cp frida-gum/subprojects/minizip-ng.wrap minizip-ng.wrap 2>/dev/null || true
+          if [ ! -d minizip-ng/.git ]; then
+            git clone --depth 1 https://github.com/frida/minizip-ng.git minizip-ng
+            git -C minizip-ng checkout -q dfc1ccc070ff7bb50726c80215cac515253a8ba0
+          fi
+          ls -d minizip-ng/meson.build && echo "minizip-ng 已就绪"
+          cat minizip-ng.wrap
+
       - name: 应用去特征补丁 (de-frida.py)
         run: |
           cp "$GITHUB_WORKSPACE/de-frida.py" "$FRIDA_DIR/de-frida.py"
