@@ -77,11 +77,11 @@ jobs:
           sudo apt-get install -y -qq python3-dev libpython3-dev python3-setuptools python3-wheel \
             gperf bison flex gettext pkg-config cmake libtool autoconf automake
 
-      - name: 安装 Android NDK (r25b)
+      - name: 安装 Android NDK (r29, frida 17.17.0 要求)
         id: setup-ndk
         uses: nttld/setup-ndk@v1
         with:
-          ndk-version: r25b
+          ndk-version: r29
 
       - name: 写入 ANDROID_NDK_ROOT
         run: echo "ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
