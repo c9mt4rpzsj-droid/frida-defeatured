@@ -1,0 +1,164 @@
+name: build-defeatured-frida-17
+
+on:
+  workflow_dispatch: {}
+  push:
+    branches: [main]
+
+env:
+  FRIDA_VERSION: "17.17.0"
+
+jobs:
+  # =====================================================================
+  # Android frida-server + frida-gadget —— 去特征版（不改客户端，stock client 兼容）
+  # 只构建 android-arm64，产出 server / gadget / inject
+  # =====================================================================
+  android-server:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout (补丁脚本 + 工具)
+        uses: actions/checkout@v4
+
+      - name: 拉取 frida 源码 + 子模块
+        run: |
+          git clone --depth 1 --branch "$FRIDA_VERSION" https://github.com/frida/frida.git "$RUNNER_TEMP/frida"
+          cd "$RUNNER_TEMP/frida"
+          git clone --depth 1 --branch "$FRIDA_VERSION" https://github.com/frida/frida-core.git subprojects/frida-core
+          git clone --depth 1 --branch "$FRIDA_VERSION" https://github.com/frida/frida-gum.git  subprojects/frida-gum
+          git clone --depth 1 --branch "$FRIDA_VERSION" https://github.com/frida/frida-python.git subprojects/frida-python
+          git submodule update --init --depth 1 releng
+          echo "FRIDA_DIR=$RUNNER_TEMP/frida" >> "$GITHUB_ENV"
+
+      - name: 应用去特征补丁 (de-frida.py)
+        run: |
+          cp "$GITHUB_WORKSPACE/de-frida.py" "$FRIDA_DIR/de-frida.py"
+          python3 "$FRIDA_DIR/de-frida.py"
+          # helper Java 目录重命名 re/frida -> re/gsvc（源码已把 package 改为 re.gsvc）
+          H="$FRIDA_DIR/subprojects/frida-core/src/android-helper"
+          [ -d "$H/re/frida" ] && mv "$H/re/frida" "$H/re/gsvc" || true
+          ls -d "$H/re/gsvc" 2>/dev/null && echo "helper 目录已重命名为 re/gsvc"
+
+      - name: 重新生成 Android helper dex (需要 SDK，在清理磁盘前做)
+        run: |
+          cp "$GITHUB_WORKSPACE/tools/regenerate-helper-dex.sh" "$FRIDA_DIR/tools/regenerate-helper-dex.sh"
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          bash "$FRIDA_DIR/tools/regenerate-helper-dex.sh" \
+            || echo "::warning::helper dex 重生成失败（仅影响 spawn 模式，attach 可忽略）"
+
+      - name: 清理磁盘（helper dex 已生成，可安全删除 Android SDK/dotnet）
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc \
+                      /usr/local/share/boost /opt/hostedtoolcache/CodeQL || true
+          echo "ANDROID_HOME=$RUNNER_TEMP/sdk" >> "$GITHUB_ENV"
+          df -h / | tail -1
+
+      - name: 给 glib 打去特征补丁 (gmain/gdbus 线程名)
+        run: |
+          # glib 由 releng/deps.toml 从源码构建（--without-prebuilds 路径），
+          # 因此必须对 deps 源码打补丁。
+          GLIB_COMMIT=$(grep -A4 '^\[glib\]' "$FRIDA_DIR/releng/deps.toml" | grep '^version' | sed 's/version = "\([0-9a-f]*\)"/\1/')
+          echo "glib commit: $GLIB_COMMIT"
+          GLIB_SRC="$FRIDA_DIR/subprojects/glib"
+          mkdir -p "$FRIDA_DIR/subprojects"
+          if [ ! -d "$GLIB_SRC/.git" ]; then
+            git clone --depth 1 https://github.com/frida/glib.git "$GLIB_SRC"
+            git -C "$GLIB_SRC" fetch --depth 1 origin "$GLIB_COMMIT"
+            git -C "$GLIB_SRC" checkout -q "$GLIB_COMMIT"
+          fi
+          # 只改线程名 gmain/gdbus；REJECTED 刻意不改（保证客户端/服务端 D-Bus 握手一致）
+          sed -i 's/g_thread_new ("gmain"/g_thread_new ("evtloop"/' "$GLIB_SRC/glib/gmain.c"
+          sed -i 's/g_thread_new ("gdbus"/g_thread_new ("ipcbus"/' "$GLIB_SRC/gio/gdbusprivate.c"
+          grep -q 'g_thread_new ("evtloop"' "$GLIB_SRC/glib/gmain.c" && echo "glib: evtloop OK"
+          grep -q 'g_thread_new ("ipcbus"' "$GLIB_SRC/gio/gdbusprivate.c" && echo "glib: ipcbus OK"
+
+      - name: 安装构建依赖
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-dev libpython3-dev python3-setuptools python3-wheel \
+            gperf bison flex gettext pkg-config cmake libtool autoconf automake
+
+      - name: 安装 Android NDK (r25b)
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r25b
+
+      - name: 写入 ANDROID_NDK_ROOT
+        run: echo "ANDROID_NDK_ROOT=${{ steps.setup-ndk.outputs.ndk-path }}" >> "$GITHUB_ENV"
+
+      - name: 修复 Java bridge CModule 缺 stdarg.h/stddef.h (仅 android)
+        run: |
+          # Android 构建的 CModule 内嵌头缺 stdarg.h/stddef.h（glib.h 第一行就 include），
+          # 导致 Java.perform() 依赖的 CModule 编译失败 ("stdarg.h not found")。
+          D="$FRIDA_DIR/subprojects/frida-gum/bindings/gumjs/runtime/cmodule-tcc"
+          cat > "$D/stdarg.h" << 'EOF'
+          #ifndef _STDARG_H
+          #define _STDARG_H
+          typedef __builtin_va_list va_list;
+          #define va_start __builtin_va_start
+          #define va_arg __builtin_va_arg
+          #define va_copy __builtin_va_copy
+          #define va_end __builtin_va_end
+          typedef va_list __gnuc_va_list;
+          #define _VA_LIST_DEFINED
+          #endif
+          EOF
+          cat > "$D/stddef.h" << 'EOF'
+          #ifndef _STDDEF_H
+          #define _STDDEF_H
+          typedef __SIZE_TYPE__ size_t;
+          typedef __PTRDIFF_TYPE__ ssize_t;
+          typedef __WCHAR_TYPE__ wchar_t;
+          typedef __PTRDIFF_TYPE__ ptrdiff_t;
+          typedef __PTRDIFF_TYPE__ intptr_t;
+          typedef __SIZE_TYPE__ uintptr_t;
+          #ifndef __int8_t_defined
+          #define __int8_t_defined
+          typedef signed char int8_t;
+          typedef signed short int int16_t;
+          typedef signed int int32_t;
+          typedef signed long long int int64_t;
+          typedef unsigned char uint8_t;
+          typedef unsigned short int uint16_t;
+          typedef unsigned int uint32_t;
+          typedef unsigned long long int uint64_t;
+          #endif
+          #ifndef NULL
+          #define NULL ((void*)0)
+          #endif
+          #undef offsetof
+          #define offsetof(type, field) ((size_t)&((type *)0)->field)
+          void *alloca(size_t size);
+          #endif
+          EOF
+          M="$FRIDA_DIR/subprojects/frida-gum/bindings/gumjs/meson.build"
+          grep -q "'cmodule-tcc' / 'stdarg.h'" "$M" \
+            || sed -i "s|'runtime' / 'cmodule-tcc' / 'inttypes.h',|'runtime' / 'cmodule-tcc' / 'inttypes.h',\n  'runtime' / 'cmodule-tcc' / 'stdarg.h',\n  'runtime' / 'cmodule-tcc' / 'stddef.h',|" "$M"
+          grep -q "'cmodule-tcc' / 'stdarg.h'" "$M" \
+            && echo "stdarg.h/stddef.h 已注册进 gumjs_headers" \
+            || echo "::warning::stdarg.h 注册未命中，meson.build 路径可能变化"
+
+      - name: 构建 android-arm64 (frida-server + frida-gadget)
+        run: |
+          cd "$FRIDA_DIR"
+          ./configure --without-prebuilds=sdk:host --host=android-arm64
+          make
+
+      - name: 收集产物
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/artifacts"
+          # 不同 frida 版本产物路径不同，用 find 兜底，dir 前缀避免重名
+          find "$FRIDA_DIR" -type f \( -name 'frida-server' -o -name 'frida-gadget.so' -o -name 'frida-inject' \) 2>/dev/null | while read -r f; do
+            base="$(basename "$f")"
+            dir="$(basename "$(dirname "$f")")"
+            cp "$f" "$GITHUB_WORKSPACE/artifacts/${dir}-${base}"
+            echo "已收集: ${dir}-${base}"
+          done
+          ls -lh "$GITHUB_WORKSPACE/artifacts/"
+
+      - name: 上传 android 产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: frida-defeatured-17.17.0-android-arm64
+          path: artifacts/
+          retention-days: 7
