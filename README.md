@@ -27,7 +27,8 @@
 | 线程名 | `frida-main-loop` / `frida-eternal-agent` 等 | `gsvc-*` |
 | agent 注入资源名 | `frida-agent-arm64.so` 等（App maps 可见） | `gsvc-agent-arm64.so` |
 | helper memfd/socket | `frida-helper-32/64`、`/frida-<uuid>` | `gsvc-helper-*`、`/gsvc-*` |
-| helper Java 包 | `re.frida.Helper`（spawn 模式） | `re.gsvc.Helper`（含重新编译 dex） |
+| helper Java 包 + 类名 | `re.frida.Helper` / `re.frida.HelperBackend` | `re.gsvc.Helper` / `re.gsvc.HelperBackend`（含重新编译 dex） |
+| helper 内部 D-Bus 名 | `re.frida.Helper` / `/re/frida/Helper` | `re.gsvc.Helper` / `/re/gsvc/Helper`（server↔helper 内部协议，客户端不引用） |
 | gadget 显示名 | `Gadget` | `Gsvc` |
 | RPC 协议串字面量 | `frida:rpc` | 运行时 base64 还原（值不变） |
 
@@ -59,7 +60,8 @@ frida -H 127.0.0.1:8888 -f com.example.app -l hook.js    # spawn
 
 ## 已知残留（刻意保留，客户端协议或无法混淆）
 
-- `re.frida.*` D-Bus 总线名（含 `re.frida.Gadget`）—— 客户端据此通信
+- `re.frida.Gadget` / `re.frida.Server` / `re.frida.HostSession*` 等**客户端可见** D-Bus 名 —— 客户端据此通信
+  （helper 内部 D-Bus 名 `re.frida.Helper` 已改 `re.gsvc.Helper`，客户端不感知）
 - `lolcathost` TLS origin —— 客户端握手用
 - agent JS 派发器里的 `frida:rpc` 字面量（frida-gum 运行时，strongR 同款不处理）
 - `frida:stdout/stderr`（switch case 无法运行时解码）
