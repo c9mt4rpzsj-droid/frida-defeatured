@@ -166,40 +166,31 @@ jobs:
           git submodule update --init --depth 1 releng
           echo "FRIDA_DIR=$RUNNER_TEMP/frida" >> "$GITHUB_ENV"
 
-      - name: 提供 minizip 子项目（gadget 依赖，name-matched wrap + 预克隆 + minizip/ 头目录）
+      - name: 禁用 gadget 的 minizip 依赖（APK 资源读取功能，冷门特性；避免 minizip/zlib 交叉编译地狱）
         run: |
-          MZ_REV=dfc1ccc070ff7bb50726c80215cac515253a8ba0
-          FC_SP="$FRIDA_DIR/subprojects/frida-core/subprojects"
-          # 1) name-matched 的 minizip.wrap（meson 按 wrap 文件名匹配 dependency('minizip')）
-          cat > "$FC_SP/minizip.wrap" << EOF
-          [wrap-git]
-          url = https://github.com/frida/minizip-ng.git
-          revision = $MZ_REV
-          depth = 1
-          [provide]
-          dependency_names = minizip
-          EOF
-          # 2) 预克隆 minizip-ng 到匹配目录
-          if [ ! -d "$FC_SP/minizip/.git" ]; then
-            git clone --depth 1 https://github.com/frida/minizip-ng.git "$FC_SP/minizip"
-            git -C "$FC_SP/minizip" checkout -q $MZ_REV
-          fi
-          # 3) 建 minizip/ include 目录（vapi 用 <minizip/mz_*.h>，源码是扁平布局）
-          mkdir -p "$FC_SP/minizip/minizip"
-          cd "$FC_SP/minizip"
-          for h in mz.h mz_strm.h mz_zip.h mz_zip_rw.h mz_crypt.h mz_os.h mz_compat.h; do
-            [ -f "$h" ] && cp -f "$h" "minizip/$h"
-          done
-          echo "minizip.wrap 与子项目已就绪:"
-          ls "$FC_SP/minizip/minizip/"
-          # 4) 给 frida-core/frida-gum 的 minizip 依赖加【显式 fallback】
-          #    （meson 隐式 wrap fallback 对 minizip 不生效，显式 fallback 是标准机制）
-          for M in "$FRIDA_DIR/subprojects/frida-core/meson.build" "$FRIDA_DIR/subprojects/frida-gum/meson.build"; do
-            if [ -f "$M" ]; then
-              sed -i "s|dependency('minizip', required: false, default_options:|dependency('minizip', required: false, fallback: ['minizip', 'minizip_dep'], default_options:|" "$M"
-              grep -q "fallback: \['minizip', 'minizip_dep'\]" "$M" && echo "minizip fallback 已加: $M" || echo "::warning::未命中: $M"
-            fi
-          done
+          # minizip 在 android 交叉编译下需要 zlib（--without-prebuilds 禁用了预编译 SDK），
+          # 且 frida 的 minizip-ng fork 有 zlib-ng/fseeko 兼容问题。禁用该依赖最稳妥。
+          # 1) gadget meson: 不再 --pkg=minizip / 不链接 minizip_dep
+          GADGET_M="$FRIDA_DIR/subprojects/frida-core/lib/gadget/meson.build"
+          sed -i "s|  extra_vala_args += '--pkg=minizip'|  # extra_vala_args += '--pkg=minizip' # 已禁用 minizip|" "$GADGET_M"
+          sed -i "s|  platform_deps += minizip_dep|  # platform_deps += minizip_dep # 已禁用 minizip|" "$GADGET_M"
+          grep -q "已禁用 minizip" "$GADGET_M" && echo "gadget meson: minizip 已禁用"
+          # 2) gadget.vala: maybe_load_asset_bytes_from_apk 改为直接返回 false（不再用 Minizip）
+          GADGET_V="$FRIDA_DIR/subprojects/frida-core/lib/gadget/gadget.vala"
+          python3 - "$GADGET_V" << 'PYEOF'
+          import re, sys
+          p = sys.argv[1]
+          s = open(p, encoding="utf-8").read()
+          pat = re.compile(
+              r'(maybe_load_asset_bytes_from_apk \([^)]*\) throws FileError \{\n)(.*?)(\n\t\}\n#endif)',
+              re.S)
+          s2, n = pat.subn(r'\1\t\tcontents = null;\n\t\treturn false; // minizip disabled\n\t}\n#endif', s)
+          if n != 1:
+              print("::warning::gadget.vala 未命中 maybe_load_asset_bytes_from_apk")
+          else:
+              open(p, "w", encoding="utf-8", newline="").write(s2)
+              print("gadget.vala: maybe_load_asset_bytes_from_apk 已禁用 minizip")
+          PYEOF
 
       - name: 应用去特征补丁 (de-frida.py)
         run: |
