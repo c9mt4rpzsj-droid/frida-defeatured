@@ -34,8 +34,12 @@
 ## 构建（GitHub Actions）
 
 1. 把本目录推送到 GitHub 仓库，**Actions → build-defeatured-frida-17 → Run workflow**。
-2. 构建完成后在 **Summary → Artifacts** 下载 `frida-defeatured-17.17.0-android-arm64`。
-3. 内含 `frida-server` 和 `frida-gadget.so`。
+2. 两个并行 job 产出两份 artifact：
+   - `frida-server-defeatured-17.17.0-android-arm64` —— frida-server
+   - `frida-gadget-defeatured-17.17.0-android-arm64` —— frida-server + frida-gadget.so + frida-inject
+
+> 已实测构建通过（NDK r29）。gadget 构建时**禁用了 minizip 依赖**（APK 资源读取特性，
+> 冷门；避免 minizip-ng 在 android 交叉编译下的 zlib/zlib-ng/fseeko 问题）。
 
 ## 使用（配合原版客户端）
 

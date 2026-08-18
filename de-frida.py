@@ -104,6 +104,13 @@ REPLACEMENTS = [
 
     # --- gadget 进程显示名（enumerate_processes 里可见）---
     ('string name = "Gadget"', 'string name = "Gsvc"'),
+
+    # --- gadget 相关错误串 / 路径（服务端侧，客户端不可见）---
+    ("Emulated realm is not supported by frida-gadget",
+     "Emulated realm is not supported by gsvc-gadget"),
+    ("frida-gadget.so to use", "gsvc-gadget.so to use"),
+    ("frida-gadget.dylib to use", "gsvc-gadget.dylib to use"),
+    ("/data/local/tmp/frida-gadget-", "/data/local/tmp/gsvc-gadget-"),
 ]
 
 
