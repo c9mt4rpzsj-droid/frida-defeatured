@@ -96,11 +96,20 @@ REPLACEMENTS = [
     ('"/frida-"', '"/gsvc-"'),
 
     # --- Android helper Java 包名（spawn 模式 helper 进程，服务端内部）---
-    # re.frida.Gadget / re.frida.HostSession17 等 D-Bus 协议名不动。
+    # 注意：helper 类名 / D-Bus 名是【server↔helper 进程内部】协议，PC 客户端不引用
+    #       （frida-python 对 re.frida.Helper 零引用），可安全改。
+    #       re.frida.Gadget / re.frida.Server / re.frida.HostSession* 等
+    #       客户端协议红线【不动】。
+    # 必须覆盖全部变体，漏一个就崩：vala 侧 find_class("re/frida/HelperBackend")
+    #   找不到（dex 已是 re/gsvc.*）→ backend_class==null → 断言崩溃 Bail out。
     ("package re.frida;", "package re.gsvc;"),
+    ("re.frida.Helper", "re.gsvc.Helper"),   # 点格式：D-Bus 名 [DBus(name="re.frida.Helper")]、
+                                             #         meson executable 're.frida.Helper'、Makefile main class
+    ("re/frida/Helper", "re/gsvc/Helper"),   # 斜杠格式：find_class("re/frida/HelperBackend")、
+                                             #         ObjectPath.HELPER="/re/frida/Helper"、Makefile 源路径
     ('"frida-helper <instance-id>"', '"gsvc-helper <instance-id>"'),
     ('"--nice-name=re.frida.helper "', '"--nice-name=re.gsvc.helper "'),
-    ('"re.frida.Helper "', '"re.gsvc.Helper "'),
+    ('"frida-android-helper"', '"gsvc-android-helper"'),   # AndroidHelperService 工作线程名
 
     # --- gadget 进程显示名（enumerate_processes 里可见）---
     ('string name = "Gadget"', 'string name = "Gsvc"'),
@@ -168,6 +177,7 @@ def verify(trees):
         "gum-js-loop", "27042",
         'g_set_prgname ("frida")',
         "frida-agent-arm64.so", "frida-helper-64", "frida-gadget-tcp-",
+        "re.frida.Helper", "re/frida/Helper", "frida-android-helper",
     ]
     kept_by_design = [
         "re.frida.", "lolcathost", "frida:stdout", "frida:stderr",
