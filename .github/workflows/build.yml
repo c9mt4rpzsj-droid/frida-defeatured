@@ -192,6 +192,14 @@ jobs:
           done
           echo "minizip.wrap 与子项目已就绪:"
           ls "$FC_SP/minizip/minizip/"
+          # 4) 给 frida-core/frida-gum 的 minizip 依赖加【显式 fallback】
+          #    （meson 隐式 wrap fallback 对 minizip 不生效，显式 fallback 是标准机制）
+          for M in "$FRIDA_DIR/subprojects/frida-core/meson.build" "$FRIDA_DIR/subprojects/frida-gum/meson.build"; do
+            if [ -f "$M" ]; then
+              sed -i "s|dependency('minizip', required: false, default_options:|dependency('minizip', required: false, fallback: ['minizip', 'minizip_dep'], default_options:|" "$M"
+              grep -q "fallback: \['minizip', 'minizip_dep'\]" "$M" && echo "minizip fallback 已加: $M" || echo "::warning::未命中: $M"
+            fi
+          done
 
       - name: 应用去特征补丁 (de-frida.py)
         run: |
